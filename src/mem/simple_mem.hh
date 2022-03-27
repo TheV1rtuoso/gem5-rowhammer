@@ -48,8 +48,8 @@
 
 #include <list>
 
-#include "mem/abstract_mem.hh"
-#include "mem/port.hh"
+#include "./abstract_mem.hh"
+#include "./port.hh"
 #include "params/SimpleMemory.hh"
 
 namespace gem5

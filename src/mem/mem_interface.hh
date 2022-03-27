@@ -86,6 +86,9 @@ class MemInterface : public AbstractMemory
      * The bank also keeps track of how many bytes have been accessed
      * in the open row since it was opened.
      */
+
+    ~MemInterface();
+
     class Bank
     {
 
@@ -143,6 +146,7 @@ class MemInterface : public AbstractMemory
     const uint32_t ranksPerChannel;
     const uint32_t banksPerRank;
     uint32_t rowsPerBank;
+    uint32_t *rowhammerCounter;
 
     /**
      * General timing requirements

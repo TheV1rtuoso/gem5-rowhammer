@@ -49,6 +49,7 @@
 
 #include <bitset>
 #include <cassert>
+#include <cstdint>
 #include <initializer_list>
 #include <list>
 
@@ -359,6 +360,7 @@ class Packet : public Printable
 
     /// The command field of the packet.
     MemCmd cmd;
+
 
     const PacketId id;
 

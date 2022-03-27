@@ -38,7 +38,8 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "mem/mem_interface.hh"
+#include <cstdint>
+#include <cstring>
 
 #include "base/bitfield.hh"
 #include "base/cprintf.hh"
@@ -47,6 +48,7 @@
 #include "debug/DRAMPower.hh"
 #include "debug/DRAMState.hh"
 #include "debug/NVM.hh"
+#include "mem_interface.hh"
 #include "sim/system.hh"
 
 namespace gem5
@@ -76,7 +78,15 @@ MemInterface::MemInterface(const MemInterfaceParams &_p)
       tWTR(_p.tWTR),
       readBufferSize(_p.read_buffer_size),
       writeBufferSize(_p.write_buffer_size)
-{}
+{
+    size_t counterSize = ranksPerChannel*banksPerRank*rowsPerBank*4;
+    rowhammerCounter = (uint32_t*) malloc(counterSize);
+    memset(rowhammerCounter, 0, counterSize);
+}
+
+MemInterface::~MemInterface(){
+    free(rowhammerCounter);
+}
 
 void
 MemInterface::setCtrl(MemCtrl* _ctrl, unsigned int command_window)
@@ -503,6 +513,58 @@ DRAMInterface::doBurstAccess(MemPacket* mem_pkt, Tick next_burst_at,
         // constraints caused be a new activation (tRRD and tXAW)
         activateBank(rank_ref, bank_ref, act_tick, mem_pkt->row);
     }
+    #define ROWHAMMER_THRESHOLD 100000000000000000000
+    #define RANDOM_MASK 0x0f
+    //#include "./abstract_mem.hh"
+
+    if (!row_hit) { // Row Buffering causes discharge
+
+        uint32_t *count = &rowhammerCounter[mem_pkt->rank*ranksPerChannel
+                                       +mem_pkt->bank*banksPerRank
+                                       +mem_pkt->row];
+        *count = 0; // New Row gets recharged
+        DPRINTF(DRAM, "Row Miss for Rank: %d, Bank: %d, Row: %d\n",
+        mem_pkt->rank, mem_pkt->bank, mem_pkt->row);
+
+        // Has Prev Row
+        if (mem_pkt->row > 0) {
+            *(count-1) += 1;
+            DPRINTF(DRAM,
+            "Add to rowcount of previous row %d (Current Count: %d)\n",
+            mem_pkt->row-1,*(count-1));
+            if (*(count-1)  == ROWHAMMER_THRESHOLD){
+                int addrPrevRow = mem_pkt->addr - rowBufferSize;
+                DPRINTF(DRAM,
+                "Memory Corruption for previous row %d, Addr: \
+                %#x Accessed: %#x \n",
+                    mem_pkt->row-1,addrPrevRow, mem_pkt->addr);
+                // OVERWRITE BYTE OF PREV ROW
+                *toHostAddr(addrPrevRow) ^= RANDOM_MASK;
+                //*(count-1) = 0;
+            }
+        }
+
+        if (mem_pkt->row < rowsPerBank){
+            *(count+1) += 1;
+            DPRINTF(DRAM,
+            "Add to rowcount of next row %d (Current Count: %d)\n",
+            mem_pkt->row-1, *(count+1));
+
+            if (*(count+1) == ROWHAMMER_THRESHOLD){
+                //TODO ADD Hammer
+                int addrNextRow = mem_pkt->addr + rowBufferSize;
+                DPRINTF(DRAM,
+                "Memory Corruption for next row %d, Addr: %#x Accessed: %#x\n",
+                mem_pkt->row+1,addrNextRow, mem_pkt->addr);
+
+                // OVERWRITE BYTE OF PREV ROW
+                *toHostAddr(addrNextRow) ^= RANDOM_MASK;
+                //*(count+1) = 0;
+            }
+        }
+
+    }
+
 
     // respect any constraints on the command (e.g. tRCD or tCCD)
     const Tick col_allowed_at = mem_pkt->isRead() ?
