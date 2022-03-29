@@ -40,6 +40,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <ctime>
 
 #include "base/bitfield.hh"
 #include "base/cprintf.hh"
@@ -73,26 +74,43 @@ MemInterface::MemInterface(const MemInterfaceParams &_p)
                       range.granularity() / burstSize : 1),
       ranksPerChannel(_p.ranks_per_channel),
       banksPerRank(_p.banks_per_rank), rowsPerBank(0),
+      rowhammerThreshold(_p.rowhammer_threshold),
+      corruptionMask(_p.corruption_mask),
       tCK(_p.tCK), tCS(_p.tCS), tBURST(_p.tBURST),
       tRTW(_p.tRTW),
       tWTR(_p.tWTR),
       readBufferSize(_p.read_buffer_size),
       writeBufferSize(_p.write_buffer_size)
 {
-    size_t counterSize = ranksPerChannel*banksPerRank*rowsPerBank*4;
-    rowhammerCounter = (uint32_t*) malloc(counterSize);
-    memset(rowhammerCounter, 0, counterSize);
 }
 
-MemInterface::~MemInterface(){
-    free(rowhammerCounter);
-}
 
 void
 MemInterface::setCtrl(MemCtrl* _ctrl, unsigned int command_window)
 {
     ctrl = _ctrl;
     maxCommandsPerWindow = command_window / tCK;
+}
+
+void DRAMInterface::applyMemoryCorruption(Rank &rank_ref,
+                        Bank &bank_ref, uint32_t status)
+{
+    if (!status) {
+        return;
+    }
+    std::cout<< "DRAM: MEMORY CORRUPTION Rank:" << rank_ref.rank << ", Bank: "
+        << bank_ref.bank << " status: " << status << std::endl;
+
+    //auto addr = bank_ref.
+}
+void NVMInterface::applyMemoryCorruption(Rank &rank_ref,
+                        Bank &bank_ref, uint32_t status)
+{
+    if (!status) {
+        return;
+    }
+    std::cout<< "NVM: MEMORY CORRUPTION Rank:" << rank_ref.rank << ", Bank: "
+        << bank_ref.bank << "status: " << status << std::endl;
 }
 
 MemPacket*
@@ -315,6 +333,9 @@ DRAMInterface::activateBank(Rank& rank_ref, Bank& bank_ref,
     // update the open row
     assert(bank_ref.openRow == Bank::NO_ROW);
     bank_ref.openRow = row;
+    uint32_t corruption_status = bank_ref.setOpenRow(row, rowhammerThreshold);
+
+    applyMemoryCorruption(rank_ref, bank_ref, corruption_status);
 
     // start counting anew, this covers both the case when we
     // auto-precharged, and when this access is forced to
@@ -325,9 +346,10 @@ DRAMInterface::activateBank(Rank& rank_ref, Bank& bank_ref,
     ++rank_ref.numBanksActive;
     assert(rank_ref.numBanksActive <= banksPerRank);
 
-    DPRINTF(DRAM, "Activate bank %d, rank %d at tick %lld, now got "
-            "%d active\n", bank_ref.bank, rank_ref.rank, act_at,
-            ranks[rank_ref.rank]->numBanksActive);
+    DPRINTF(DRAM, "Activate bank %d, rank %d at ", bank_ref.bank,
+                    rank_ref.rank);
+    DPRINTF(DRAM, "tick %lld", act_at);
+    DPRINTF(DRAM, "now active: %d", ranks[rank_ref.rank]->numBanksActive);
 
     rank_ref.cmdList.push_back(Command(MemCommand::ACT, bank_ref.bank,
                                act_at));
@@ -415,7 +437,7 @@ DRAMInterface::prechargeBank(Rank& rank_ref, Bank& bank, Tick pre_tick,
     // sample the bytes per activate here since we are closing
     // the page
     stats.bytesPerActivate.sample(bank.bytesAccessed);
-
+    bank.resetRHCounter();
     bank.openRow = Bank::NO_ROW;
 
     Tick pre_at = pre_tick;
@@ -452,6 +474,8 @@ DRAMInterface::prechargeBank(Rank& rank_ref, Bank& bank, Tick pre_tick,
         DPRINTF(DRAMPower, "%llu,PRE,%d,%d\n", divCeil(pre_at, tCK) -
                 timeStampOffset, bank.bank, rank_ref.rank);
     }
+    // Reset RH Counter for Bank
+    bank.resetRHCounter();
 
     // if we look at the current number of active banks we might be
     // tempted to think the DRAM is now idle, however this can be
@@ -477,6 +501,7 @@ DRAMInterface::doBurstAccess(MemPacket* mem_pkt, Tick next_burst_at,
 
     // get the rank
     Rank& rank_ref = *ranks[mem_pkt->rank];
+    DPRINTF(DRAM, "1\n");
 
     assert(rank_ref.inRefIdleState());
 
@@ -488,8 +513,10 @@ DRAMInterface::doBurstAccess(MemPacket* mem_pkt, Tick next_burst_at,
         rank_ref.scheduleWakeUpEvent(tXP);
     }
 
+    DPRINTF(DRAM, "2\n");
     // get the bank
     Bank& bank_ref = rank_ref.banks[mem_pkt->bank];
+    DPRINTF(DRAM, "3\n");
 
     // for the state we need to track if it is a row hit or not
     bool row_hit = true;
@@ -505,6 +532,7 @@ DRAMInterface::doBurstAccess(MemPacket* mem_pkt, Tick next_burst_at,
             prechargeBank(rank_ref, bank_ref, std::max(bank_ref.preAllowedAt,
                                                    curTick()));
         }
+        //bank_ref.openRow = Bank::NO_ROW;
 
         // next we need to account for the delay in activating the page
         Tick act_tick = std::max(bank_ref.actAllowedAt, curTick());
@@ -513,58 +541,6 @@ DRAMInterface::doBurstAccess(MemPacket* mem_pkt, Tick next_burst_at,
         // constraints caused be a new activation (tRRD and tXAW)
         activateBank(rank_ref, bank_ref, act_tick, mem_pkt->row);
     }
-    #define ROWHAMMER_THRESHOLD 100000000000000000000
-    #define RANDOM_MASK 0x0f
-    //#include "./abstract_mem.hh"
-
-    if (!row_hit) { // Row Buffering causes discharge
-
-        uint32_t *count = &rowhammerCounter[mem_pkt->rank*ranksPerChannel
-                                       +mem_pkt->bank*banksPerRank
-                                       +mem_pkt->row];
-        *count = 0; // New Row gets recharged
-        DPRINTF(DRAM, "Row Miss for Rank: %d, Bank: %d, Row: %d\n",
-        mem_pkt->rank, mem_pkt->bank, mem_pkt->row);
-
-        // Has Prev Row
-        if (mem_pkt->row > 0) {
-            *(count-1) += 1;
-            DPRINTF(DRAM,
-            "Add to rowcount of previous row %d (Current Count: %d)\n",
-            mem_pkt->row-1,*(count-1));
-            if (*(count-1)  == ROWHAMMER_THRESHOLD){
-                int addrPrevRow = mem_pkt->addr - rowBufferSize;
-                DPRINTF(DRAM,
-                "Memory Corruption for previous row %d, Addr: \
-                %#x Accessed: %#x \n",
-                    mem_pkt->row-1,addrPrevRow, mem_pkt->addr);
-                // OVERWRITE BYTE OF PREV ROW
-                *toHostAddr(addrPrevRow) ^= RANDOM_MASK;
-                //*(count-1) = 0;
-            }
-        }
-
-        if (mem_pkt->row < rowsPerBank){
-            *(count+1) += 1;
-            DPRINTF(DRAM,
-            "Add to rowcount of next row %d (Current Count: %d)\n",
-            mem_pkt->row-1, *(count+1));
-
-            if (*(count+1) == ROWHAMMER_THRESHOLD){
-                //TODO ADD Hammer
-                int addrNextRow = mem_pkt->addr + rowBufferSize;
-                DPRINTF(DRAM,
-                "Memory Corruption for next row %d, Addr: %#x Accessed: %#x\n",
-                mem_pkt->row+1,addrNextRow, mem_pkt->addr);
-
-                // OVERWRITE BYTE OF PREV ROW
-                *toHostAddr(addrNextRow) ^= RANDOM_MASK;
-                //*(count+1) = 0;
-            }
-        }
-
-    }
-
 
     // respect any constraints on the command (e.g. tRCD or tCCD)
     const Tick col_allowed_at = mem_pkt->isRead() ?
@@ -1204,6 +1180,7 @@ DRAMInterface::Rank::Rank(const DRAMInterfaceParams &_p,
       stats(_dram, *this)
 {
     for (int b = 0; b < _p.banks_per_rank; b++) {
+        banks[b] = Bank(_dram.rowsPerBank);
         banks[b].bank = b;
         // GDDR addressing of banks to BG is linear.
         // Here we assume that all DRAM generations address bank groups as
@@ -1567,8 +1544,8 @@ DRAMInterface::Rank::schedulePowerEvent(PowerState pwr_state, Tick tick)
     assert(tick >= curTick());
 
     if (!powerEvent.scheduled()) {
-        DPRINTF(DRAMState, "Scheduling power event at %llu to state %d\n",
-                tick, pwr_state);
+        //DPRINTF(DRAMState, "Scheduling power event at %llu to state %d\n",
+        //        tick, pwr_state);
 
         // insert the new transition
         pwrStateTrans = pwr_state;
@@ -2245,6 +2222,7 @@ NVMInterface::chooseRead(MemPacketQueue& queue)
         if (pkt->readyTime == MaxTick && !pkt->isDram() && pkt->isRead()) {
            // get the bank
            Bank& bank_ref = ranks[pkt->rank]->banks[pkt->bank];
+           Rank& rank_ref = *ranks[pkt->rank];
 
             // issueing a read, inc counter and verify we haven't overrun
             numPendingReads++;
@@ -2274,6 +2252,9 @@ NVMInterface::chooseRead(MemPacketQueue& queue)
             if (bank_ref.openRow != pkt->row) {
                 // update the open bank, re-using row field
                 bank_ref.openRow = pkt->row;
+                auto status = bank_ref.setOpenRow(pkt->row,
+                                rowhammerThreshold);
+                applyMemoryCorruption(rank_ref, bank_ref, status);
 
                 // sample the bytes accessed to a buffer in this bank
                 // here when we are re-buffering the data
@@ -2380,6 +2361,7 @@ NVMInterface::doBurstAccess(MemPacket* pkt, Tick next_burst_at)
 
     // get the bank
     Bank& bank_ref = ranks[pkt->rank]->banks[pkt->bank];
+    Rank& rank_ref = *ranks[pkt->rank];
 
     // respect any constraints on the command
     const Tick bst_allowed_at = pkt->isRead() ?
@@ -2453,7 +2435,9 @@ NVMInterface::doBurstAccess(MemPacket* pkt, Tick next_burst_at)
         if ((bank_ref.bank == pkt->bank) &&
             (bank_ref.openRow != pkt->row)) {
            // update the open buffer, re-using row field
-           bank_ref.openRow = pkt->row;
+            bank_ref.openRow = pkt->row;
+            auto status = bank_ref.setOpenRow(pkt->row, rowhammerThreshold);
+           applyMemoryCorruption(rank_ref, bank_ref, status);
 
            // sample the bytes accessed to a buffer in this bank
            // here when we are re-buffering the data

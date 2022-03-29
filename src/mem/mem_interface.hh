@@ -46,6 +46,11 @@
 #ifndef __MEM_INTERFACE_HH__
 #define __MEM_INTERFACE_HH__
 
+#include <cassert>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <string>
 #include <unordered_set>
@@ -87,33 +92,91 @@ class MemInterface : public AbstractMemory
      * in the open row since it was opened.
      */
 
-    ~MemInterface();
 
     class Bank
     {
 
       public:
         static const uint32_t NO_ROW = -1;
+        static const uint32_t UPPER_BANK = 1;
+        static const uint32_t LOWER_BANK = 2;
+        static const uint32_t BOTH_BANKS = 3;
 
         uint32_t openRow;
         uint8_t bank;
         uint8_t bankgr;
-
+        uint32_t* rowhammerAccessCounter;
         Tick rdAllowedAt;
         Tick wrAllowedAt;
         Tick preAllowedAt;
         Tick actAllowedAt;
-
         uint32_t rowAccesses;
         uint32_t bytesAccessed;
+        uint32_t rowsPerBank;
 
-        Bank() :
+        Bank(uint32_t rowsPerBank = 0) :
             openRow(NO_ROW), bank(0), bankgr(0),
             rdAllowedAt(0), wrAllowedAt(0), preAllowedAt(0), actAllowedAt(0),
-            rowAccesses(0), bytesAccessed(0)
-        { }
-    };
+            rowAccesses(0), bytesAccessed(0), rowsPerBank(rowsPerBank)
+        {
+          assert(Bank::UPPER_BANK+ Bank::LOWER_BANK == BOTH_BANKS);
+          rowhammerAccessCounter = (uint32_t*) calloc(rowsPerBank,
+              sizeof(uint32_t));
+          assert(!*rowhammerAccessCounter);
+        }
 
+        ~Bank() {
+          free(rowhammerAccessCounter);
+        }
+
+        void resetRHCounter() const {
+            memset(rowhammerAccessCounter,0,rowsPerBank*sizeof(uint32_t));
+        }
+
+
+        //Returns corruption status
+        //TODO Threshold triggers only once
+        uint32_t setOpenRow (uint32_t row, uint32_t threshold=0) const {
+            //this->openRow = row;
+            uint32_t result = 0;
+
+            if (row == NO_ROW || !threshold) {
+              return result;
+            }
+
+            // TODO check if necessary
+            rowhammerAccessCounter[row] = 0;
+
+            // Has Prev Row
+            if (row > 0) {
+                rowhammerAccessCounter[row - 1]++;
+                std::cout << "Add to rowcount of previous row " << row-1 <<
+                  "(Current Count:" << rowhammerAccessCounter[row-1] << ")\n";
+
+                if (rowhammerAccessCounter[row - 1] == threshold) {
+                    std::cout<< "previous row surpassed RH threshold row:" <<
+                     row-1 << "\n";
+                    result += Bank::LOWER_BANK;
+                }
+            }
+
+            // Has Next Row
+            if (row < rowsPerBank-1) {
+                    rowhammerAccessCounter[row+1]++;
+                    std::cout << "Add to rowcount of next row " << row+1
+                    << "(Current Count:" << rowhammerAccessCounter[row+1]
+                    << ")\n";
+
+                    if (rowhammerAccessCounter[row+1] == threshold){
+                        std::cout<< "Next row surpassed RH threshold row:"
+                        << row-1 << "\n";
+                        result += Bank::UPPER_BANK;
+                    }
+                }
+            std::cout << std::endl;
+            return result;
+      }
+    };
     /**
      * A pointer to the parent MemCtrl instance
      */
@@ -145,8 +208,9 @@ class MemInterface : public AbstractMemory
     const uint32_t burstsPerStripe;
     const uint32_t ranksPerChannel;
     const uint32_t banksPerRank;
+    const uint32_t rowhammerThreshold;
+    const uint32_t corruptionMask;
     uint32_t rowsPerBank;
-    uint32_t *rowhammerCounter;
 
     /**
      * General timing requirements
@@ -232,6 +296,7 @@ class MemInterface : public AbstractMemory
      */
     virtual std::pair<MemPacketQueue::iterator, Tick>
     chooseNextFRFCFS(MemPacketQueue& queue, Tick min_col_at) const = 0;
+
 
     /*
      * Function to calulate unloaded latency
@@ -899,6 +964,15 @@ class DRAMInterface : public MemInterface
     void init() override;
 
     /**
+     *
+     * @param rank_ref
+     * @param bank_ref
+     * @param status
+     */
+    void applyMemoryCorruption(Rank& rank_ref, Bank& bank_ref,
+                               uint32_t status);
+
+    /**
      * Iterate through dram ranks and instantiate per rank startup routine
      */
     void startup() override;
@@ -1162,6 +1236,9 @@ class NVMInterface : public MemInterface
      * Initialize the NVM interface and verify parameters
      */
     void init() override;
+
+    void applyMemoryCorruption(Rank& rank_ref, Bank& bank_ref,
+    uint32_t status);
 
     /**
      * Setup the rank based on packet received

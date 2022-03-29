@@ -30,6 +30,7 @@
 #define __BASE_CPRINTF_FORMATS_HH__
 
 #include <cstring>
+#include <exception>
 #include <ostream>
 #include <sstream>
 

@@ -50,7 +50,7 @@ system.clk_domain.voltage_domain = VoltageDomain()
 
 # Set up the system
 system.mem_mode = 'timing'               # Use timing accesses
-system.mem_ranges = [AddrRange('512MB')] # Create an address range
+system.mem_ranges = [AddrRange('5GB')] # Create an address range
 
 # Create a simple CPU
 system.cpu = TimingSimpleCPU()
@@ -77,8 +77,6 @@ system.mem_ctrl = MemCtrl()
 system.mem_ctrl.dram = DDR3_1600_8x8()
 system.mem_ctrl.dram.range = system.mem_ranges[0]
 system.mem_ctrl.port = system.membus.mem_side_ports
-system.mem_ctrl.dram.rowhammer_threshold = 21
-system.mem_ctrl.dram.corruption_mask = 0
 
 # Connect the system up to the membus
 system.system_port = system.membus.cpu_side_ports
@@ -89,8 +87,7 @@ isa = str(m5.defines.buildEnv['TARGET_ISA']).lower()
 # Default to running 'hello', use the compiled ISA to find the binary
 # grab the specific path to the binary
 thispath = os.path.dirname(os.path.realpath(__file__))
-binary = os.path.join(thispath, '../../../',
-                      'tests/test-progs/hello/bin/', isa, 'linux/hello')
+binary = os.path.join(thispath, '../rowhammer-test/rowhammer_test')
 
 system.workload = SEWorkload.init_compatible(binary)
 

@@ -1,0 +1,15 @@
+
+Add Counter
+
+OnAccess:
+	- set accessed row to 0
+	- increment neighbour row count
+
+OnThreshold
+	- xor mit random mask
+
+
+Requirements:
+	- normal programs work as expected
+	- rowhammer PoC finds flips
+

@@ -79,6 +79,11 @@ class MemInterface(AbstractMemory):
     ranks_per_channel = Param.Unsigned("Number of ranks per channel")
     banks_per_rank = Param.Unsigned("Number of banks per rank")
 
+    rowhammer_threshold = Param.Unsigned("Amount of approximate accesses \
+         needed to discharge row")
+
+    corruption_mask = Param.Unsigned("XOR Mask on Memory Corruption")
+
     # timing behaviour and constraints - all in nanoseconds
 
     # the base clock period of the memory
@@ -105,3 +110,6 @@ class MemInterface(AbstractMemory):
     # 1) RD-to-RD, 2) WR-to-WR, 3) RD-to-WR, and 4) WR-to-RD
     # different rank bus delay
     tCS = Param.Latency("Rank to rank switching time")
+
+    # Rowhammer Parameter
+

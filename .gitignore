@@ -1,33 +1,153 @@
-build
-parser.out
-parsetab.py
-cscope.files
-cscope.out
-*.pyc
-*~
-.*.swp
-.*.swo
-m5out
-/src/doxygen/html
-/ext/dramsim2/DRAMSim2
-/ext/mcpat/regression/*/*.out
-/util/m5/*.o
-/util/m5/*.a
-/util/m5/m5
-/util/packet_pb2.py
-/util/tap/*.d
-/util/tap/*.o
-/util/tap/m5tap
-/util/term/m5term
-/system/arm/dt/*.dtb
-/system/arm/dt/.gen
-/system/arm/bootloader/arm/*.o
-/system/arm/bootloader/arm/boot.arm
-/system/arm/bootloader/arm/boot_emm.arm
-/system/arm/bootloader/arm64/*.o
-/system/arm/bootloader/arm64/boot.arm64
-/system/arm/bootloader/arm64/boot_emm.arm64
-/system/arm/bootloader/arm64/boot_v2.arm64
-configs/example/memcheck.cfg
-configs/dram/lowp_sweep.cfg
-.pyenv
+################################
+###########  FILES  ############
+################################
+TODO*.*
+*.pptx
+*.pdf
+CMakeLists.txt
+
+
+################################
+########### FOLDERS ############
+################################
+build/
+cmake-build-debug
+html/
+.idea/
+**/__pycache__
+.vscode/
+lectures/
+
+################################
+############ C/C++ #############
+################################
+# Prerequisites
+*.d
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+*.ko
+*.elf
+# Precompiled Headers
+*.gch
+*.pch
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+# Fortran module files
+*.mod
+*.smod
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+# Executables
+*.i*86
+*.x86_64
+*.hex
+*.app
+*.stackdump
+*.exe
+*.out
+# Linker output
+*.ilk
+*.map
+*.exp
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+################################
+########### VS CODE ############
+################################
+.vscode
+*.code-workspace
+.history
+
+################################
+###########   VS    ############
+################################
+
+# User-specific files
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# User-specific files (MonoDevelop/Xamarin Studio)
+*.userprefs
+
+# Mono auto generated files
+mono_crash.*
+
+# Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+# Files built by Visual Studio
+*_i.c
+*_p.c
+*_h.h
+*.meta
+*.iobj
+*.ipdb
+*.pgc
+*.pgd
+*.rsp
+*.sbr
+*.tlb
+*.tli
+*.tlh
+*.tmp
+*.tmp_proj
+*_wpftmp.csproj
+*.log
+*.tlog
+*.vspscc
+*.vssscc
+.builds
+*.pidb
+*.svclog
+*.scc
+
+# Chutzpah Test files
+_Chutzpah*
+
+# Visual C++ cache files
+ipch/
+*.aps
+*.ncb
+*.opendb
+*.opensdf
+*.sdf
+*.cachefile
+*.VC.db
+*.VC.VC.opendb
+
+# Visual Studio profiler
+*.psess
+*.vsp
+*.vspx
+*.sap
+
+# Visual Studio Trace Files
+*.e2e
