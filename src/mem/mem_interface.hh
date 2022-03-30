@@ -59,7 +59,7 @@
 
 #include "base/compiler.hh"
 #include "base/statistics.hh"
-#include "debug/RowHammer.hh"
+#include "debug/RowHammerExt.hh"
 #include "enums/AddrMap.hh"
 #include "enums/PageManage.hh"
 #include "mem/abstract_mem.hh"
@@ -124,7 +124,7 @@ class MemInterface : public AbstractMemory
         void resetRHCounter();
 
         void prechargeOpenRow() {
-            DPRINTF(RowHammer, "Precharge Row %d of Bank %d, Rank %d\n",
+            DPRINTF(RowHammerExt, "Precharge Row %d of Bank %d, Rank %d\n",
                     openRow, bank, rank);
             accessCounter[openRow] = 0;
         }

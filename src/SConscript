@@ -873,6 +873,7 @@ for ext in target_exts:
         break
 
 DebugFlag('RowHammer')
+DebugFlag('RowHammerExt')
 
 # SCons doesn't know to append a library suffix when there is a '.' in the
 # name. Use '_' instead.

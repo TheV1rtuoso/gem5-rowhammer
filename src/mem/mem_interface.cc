@@ -50,6 +50,7 @@
 #include "debug/DRAMState.hh"
 #include "debug/NVM.hh"
 #include "debug/RowHammer.hh"
+#include "debug/RowHammerExt.hh"
 #include "mem_interface.hh"
 #include "sim/system.hh"
 
@@ -100,7 +101,7 @@ MemInterface::Bank::Bank(uint32_t rowsPerBank, uint8_t rank) :
     actAllowedAt(0), rowAccesses(0), bytesAccessed(0)
     {
         assert(Bank::UPPER_BANK+ Bank::LOWER_BANK == BOTH_BANKS);
-        DPRINTF(RowHammer,"RowsPerBank: %d\n", rowsPerBank);
+        //DPRINTF(RowHammer,"RowsPerBank: %d\n", rowsPerBank);
         for (int i = 0; i < rowsPerBank; ++i) {
             accessCounter.push_back(0);
             assert(!accessCounter[i]);
@@ -109,7 +110,7 @@ MemInterface::Bank::Bank(uint32_t rowsPerBank, uint8_t rank) :
 
 void MemInterface::Bank::resetRHCounter() {
         //memset(accessCounter, 0, rowsPerBank * sizeof(uint32_t));
-        DPRINTF(RowHammer, "Reset accessCounter for Bank %d, R %d \n",
+        DPRINTF(RowHammerExt, "Reset accessCounter for Bank %d, R %d \n",
                 bank, rank);
         for (int i = 0; i < rowsPerBank; ++i) {
             accessCounter[i] = 0;
@@ -129,14 +130,15 @@ uint32_t MemInterface::Bank::setOpenRow (uint32_t row, uint32_t threshold) {
     // Has Prev Row
     if (row > 0 && row < accessCounter.size()) {
         accessCounter[row - 1]++;
-        DPRINTF(RowHammer,"Approximate access to row %d of DRAM Bank %d,"
+        DPRINTF(RowHammerExt,"Approximate access to row %d of "
+				"DRAM Bank %d,"
                           "%d detected (Current Count: %d)\n",
-                row-1, bank, rank, accessCounter[row-1]);
+                        row-1, bank, rank, accessCounter[row-1]);
 
         if (accessCounter[row - 1] == threshold) {
-            DPRINTF(RowHammer,"Surpassed rowhammer threshold (%d) for row %d"
-                              " of Bank %d, R %d\n", threshold,
-                    row-1, bank, rank);
+            DPRINTF(RowHammerExt,"Surpassed rowhammer " 
+			"threshold (%d) for row %d of Bank %d, R %d\n", 
+						threshold, row-1, bank, rank);
             result += Bank::LOWER_BANK;
         }
     }
@@ -144,14 +146,14 @@ uint32_t MemInterface::Bank::setOpenRow (uint32_t row, uint32_t threshold) {
     // Has Next Row
     if (row+1 < accessCounter.size()) {
         accessCounter[row + 1]++;
-        DPRINTF(RowHammer,"Approximate access to row %d of DRAM Bank %d,"
-                          " R %d detected (Current Count: %d)\n",
-                row+1, bank, rank, accessCounter[row+1]);
+        //DPRINTF(RowHammer,"Approximate access to row %d of DRAM Bank %d,"
+        //                  " R %d detected (Current Count: %d)\n",
+        //        row+1, bank, rank, accessCounter[row+1]);
         if (accessCounter[row + 1] == threshold){
-            DPRINTF(RowHammer,"Surpassed rowhammer threshold (%d) for row %d"
-                              " of Bank %d, R %d \n", threshold,
-                    row+1, bank, rank);
-            result += Bank::UPPER_BANK;
+            //DPRINTF(RowHammer,"Surpassed rowhammer threshold (%d) for row %d"
+            //                  " of Bank %d, R %d \n", threshold,
+            //        row+1, bank, rank);
+            //result += Bank::UPPER_BANK;
         }
     }
     return result;
@@ -166,11 +168,48 @@ void DRAMInterface::applyMemoryCorruption(Rank &rank_ref, Bank &bank_ref,
         return;
     }
     DPRINTF(RowHammer, "DRAM MEMORY CORRUPTION Rank: %d,"
-                       " Bank: %d, Status: %2x\n",
+                       " Bank: %d, Status: 0x%2x\n",
             rank_ref.rank,bank_ref.bank,status);
 
-    uint64_t addr =
+    Addr addr; // physical addr of first byte in accessed_row
+
+    if (!(addrMapping == enums::RoRaBaChCo || 
+				addrMapping == enums::RoRaBaCoCh)){
+        DPRINTF(RowHammer, "Corruption: addrMapping not supported\n");
+        return; // Not Supported
+    }
+
+    //return;
+
+    if (status & Bank::UPPER_BANK) {
+        addr = accessed_row + 1;
+        addr = addr * rowsPerBank;
+        addr += rank_ref.rank;
+        addr = addr * ranksPerChannel;
+        addr += bank_ref.bank;
+        //addr = addr << 16; // Channel = 0, Column = 0
+        // last 24 bytes offset
+        //addr = addr << 24;
+        DPRINTF(RowHammer, "XOR  %#x with Curruption Mask\n", addr);
+
+        uint8_t *host_addr = toHostAddr(addr);
+        *host_addr ^= corruptionMask;
+    }
+    if (status & Bank::LOWER_BANK) {
+        addr = accessed_row - 1;
+        addr = addr * rowsPerBank;
+        addr += rank_ref.rank;
+        addr = addr * ranksPerChannel;
+        addr += bank_ref.bank;
+        //addr = addr << 16; // Channel = 0, Column = 0
+        // last 24 bytes offset
+        //addr = addr << 24;
+        DPRINTF(RowHammer, "XOR  %#x with Curruption Mask\n", addr);
+        uint8_t *host_addr = toHostAddr(addr);
+        *host_addr ^= corruptionMask;
+    }
 }
+
 void NVMInterface::applyMemoryCorruption(Rank &rank_ref,
                         Bank &bank_ref, uint32_t status)
 {
@@ -199,7 +238,7 @@ MemInterface::decodePacket(const PacketPtr pkt, Addr pkt_addr,
     // Get packed address, starting at 0
     Addr addr = getCtrlAddr(pkt_addr);
 
-    // truncate the address to a memory burst, which makes it unique to
+        // truncate the address to a memory burst, which makes it unique to
     // a specific buffer, row, bank, rank and channel
     addr = addr / burstSize;
 
@@ -1551,7 +1590,7 @@ DRAMInterface::Rank::processRefreshEvent()
         // Run the refresh and schedule event to transition power states
         // when refresh completes
         refreshState = REF_RUN;
-        DPRINTF(RowHammer, "Reset accessCounter for Rank %d\n",
+        DPRINTF(RowHammerExt, "Reset accessCounter for Rank %d\n",
                 unsigned(rank));
         for (auto b :banks){
             b.resetRHCounter();
