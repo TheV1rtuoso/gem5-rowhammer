@@ -59,6 +59,7 @@
 
 #include "base/compiler.hh"
 #include "base/statistics.hh"
+#include "debug/RowHammer.hh"
 #include "enums/AddrMap.hh"
 #include "enums/PageManage.hh"
 #include "mem/abstract_mem.hh"
@@ -93,89 +94,44 @@ class MemInterface : public AbstractMemory
      */
 
 
-    class Bank
+    class Bank : public Named
     {
+      private:
+        std::vector<uint32_t> accessCounter;
+        uint32_t rowsPerBank;
+        const uint8_t rank;
 
       public:
         static const uint32_t NO_ROW = -1;
         static const uint32_t UPPER_BANK = 1;
         static const uint32_t LOWER_BANK = 2;
         static const uint32_t BOTH_BANKS = 3;
-
         uint32_t openRow;
         uint8_t bank;
         uint8_t bankgr;
-        uint32_t* rowhammerAccessCounter;
         Tick rdAllowedAt;
         Tick wrAllowedAt;
         Tick preAllowedAt;
         Tick actAllowedAt;
         uint32_t rowAccesses;
         uint32_t bytesAccessed;
-        uint32_t rowsPerBank;
 
-        Bank(uint32_t rowsPerBank = 0) :
-            openRow(NO_ROW), bank(0), bankgr(0),
-            rdAllowedAt(0), wrAllowedAt(0), preAllowedAt(0), actAllowedAt(0),
-            rowAccesses(0), bytesAccessed(0), rowsPerBank(rowsPerBank)
-        {
-          assert(Bank::UPPER_BANK+ Bank::LOWER_BANK == BOTH_BANKS);
-          rowhammerAccessCounter = (uint32_t*) calloc(rowsPerBank,
-              sizeof(uint32_t));
-          assert(!*rowhammerAccessCounter);
+        Bank(uint32_t rowsPerBank, uint8_t rank);
+        //~Bank() {
+        //  free(accessCounter);
+        //}
+
+        void resetRHCounter();
+
+        void prechargeOpenRow() {
+            DPRINTF(RowHammer, "Precharge Row %d of Bank %d, Rank %d\n",
+                    openRow, bank, rank);
+            accessCounter[openRow] = 0;
         }
-
-        ~Bank() {
-          free(rowhammerAccessCounter);
-        }
-
-        void resetRHCounter() const {
-            memset(rowhammerAccessCounter,0,rowsPerBank*sizeof(uint32_t));
-        }
-
 
         //Returns corruption status
         //TODO Threshold triggers only once
-        uint32_t setOpenRow (uint32_t row, uint32_t threshold=0) const {
-            //this->openRow = row;
-            uint32_t result = 0;
-
-            if (row == NO_ROW || !threshold) {
-              return result;
-            }
-
-            // TODO check if necessary
-            rowhammerAccessCounter[row] = 0;
-
-            // Has Prev Row
-            if (row > 0) {
-                rowhammerAccessCounter[row - 1]++;
-                std::cout << "Add to rowcount of previous row " << row-1 <<
-                  "(Current Count:" << rowhammerAccessCounter[row-1] << ")\n";
-
-                if (rowhammerAccessCounter[row - 1] == threshold) {
-                    std::cout<< "previous row surpassed RH threshold row:" <<
-                     row-1 << "\n";
-                    result += Bank::LOWER_BANK;
-                }
-            }
-
-            // Has Next Row
-            if (row < rowsPerBank-1) {
-                    rowhammerAccessCounter[row+1]++;
-                    std::cout << "Add to rowcount of next row " << row+1
-                    << "(Current Count:" << rowhammerAccessCounter[row+1]
-                    << ")\n";
-
-                    if (rowhammerAccessCounter[row+1] == threshold){
-                        std::cout<< "Next row surpassed RH threshold row:"
-                        << row-1 << "\n";
-                        result += Bank::UPPER_BANK;
-                    }
-                }
-            std::cout << std::endl;
-            return result;
-      }
+        uint32_t setOpenRow (uint32_t row, uint32_t threshold=0);
     };
     /**
      * A pointer to the parent MemCtrl instance
@@ -970,7 +926,7 @@ class DRAMInterface : public MemInterface
      * @param status
      */
     void applyMemoryCorruption(Rank& rank_ref, Bank& bank_ref,
-                               uint32_t status);
+                               uint32_t accessed_row,uint32_t status);
 
     /**
      * Iterate through dram ranks and instantiate per rank startup routine

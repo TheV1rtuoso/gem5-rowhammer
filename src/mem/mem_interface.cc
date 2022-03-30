@@ -49,6 +49,7 @@
 #include "debug/DRAMPower.hh"
 #include "debug/DRAMState.hh"
 #include "debug/NVM.hh"
+#include "debug/RowHammer.hh"
 #include "mem_interface.hh"
 #include "sim/system.hh"
 
@@ -73,9 +74,10 @@ MemInterface::MemInterface(const MemInterfaceParams &_p)
       burstsPerStripe(range.interleaved() ?
                       range.granularity() / burstSize : 1),
       ranksPerChannel(_p.ranks_per_channel),
-      banksPerRank(_p.banks_per_rank), rowsPerBank(0),
+      banksPerRank(_p.banks_per_rank),
       rowhammerThreshold(_p.rowhammer_threshold),
       corruptionMask(_p.corruption_mask),
+      rowsPerBank(0),
       tCK(_p.tCK), tCS(_p.tCS), tBURST(_p.tBURST),
       tRTW(_p.tRTW),
       tWTR(_p.tWTR),
@@ -92,16 +94,82 @@ MemInterface::setCtrl(MemCtrl* _ctrl, unsigned int command_window)
     maxCommandsPerWindow = command_window / tCK;
 }
 
-void DRAMInterface::applyMemoryCorruption(Rank &rank_ref,
-                        Bank &bank_ref, uint32_t status)
-{
+MemInterface::Bank::Bank(uint32_t rowsPerBank, uint8_t rank) :
+    Named("Bank"), rowsPerBank(rowsPerBank), rank(rank), openRow(NO_ROW),
+    bank(0), bankgr(0), rdAllowedAt(0), wrAllowedAt(0), preAllowedAt(0),
+    actAllowedAt(0), rowAccesses(0), bytesAccessed(0)
+    {
+        assert(Bank::UPPER_BANK+ Bank::LOWER_BANK == BOTH_BANKS);
+        DPRINTF(RowHammer,"RowsPerBank: %d\n", rowsPerBank);
+        for (int i = 0; i < rowsPerBank; ++i) {
+            accessCounter.push_back(0);
+            assert(!accessCounter[i]);
+        }
+    }
+
+void MemInterface::Bank::resetRHCounter() {
+        //memset(accessCounter, 0, rowsPerBank * sizeof(uint32_t));
+        DPRINTF(RowHammer, "Reset accessCounter for Bank %d, R %d \n",
+                bank, rank);
+        for (int i = 0; i < rowsPerBank; ++i) {
+            accessCounter[i] = 0;
+            //assert(!accessCounter[i]);
+        }
+    }
+
+
+uint32_t MemInterface::Bank::setOpenRow (uint32_t row, uint32_t threshold) {
+    //this->openRow = row;
+    uint32_t result = 0;
+    if (row == NO_ROW || !threshold) {
+        return result;
+    }
+    assert(row < accessCounter.size());
+
+    // Has Prev Row
+    if (row > 0 && row < accessCounter.size()) {
+        accessCounter[row - 1]++;
+        DPRINTF(RowHammer,"Approximate access to row %d of DRAM Bank %d,"
+                          "%d detected (Current Count: %d)\n",
+                row-1, bank, rank, accessCounter[row-1]);
+
+        if (accessCounter[row - 1] == threshold) {
+            DPRINTF(RowHammer,"Surpassed rowhammer threshold (%d) for row %d"
+                              " of Bank %d, R %d\n", threshold,
+                    row-1, bank, rank);
+            result += Bank::LOWER_BANK;
+        }
+    }
+
+    // Has Next Row
+    if (row+1 < accessCounter.size()) {
+        accessCounter[row + 1]++;
+        DPRINTF(RowHammer,"Approximate access to row %d of DRAM Bank %d,"
+                          " R %d detected (Current Count: %d)\n",
+                row+1, bank, rank, accessCounter[row+1]);
+        if (accessCounter[row + 1] == threshold){
+            DPRINTF(RowHammer,"Surpassed rowhammer threshold (%d) for row %d"
+                              " of Bank %d, R %d \n", threshold,
+                    row+1, bank, rank);
+            result += Bank::UPPER_BANK;
+        }
+    }
+    return result;
+}
+
+
+void DRAMInterface::applyMemoryCorruption(Rank &rank_ref, Bank &bank_ref,
+                                          uint32_t accessed_row,
+                                          uint32_t status) {
+
     if (!status) {
         return;
     }
-    std::cout<< "DRAM: MEMORY CORRUPTION Rank:" << rank_ref.rank << ", Bank: "
-        << bank_ref.bank << " status: " << status << std::endl;
+    DPRINTF(RowHammer, "DRAM MEMORY CORRUPTION Rank: %d,"
+                       " Bank: %d, Status: %2x\n",
+            rank_ref.rank,bank_ref.bank,status);
 
-    //auto addr = bank_ref.
+    uint64_t addr =
 }
 void NVMInterface::applyMemoryCorruption(Rank &rank_ref,
                         Bank &bank_ref, uint32_t status)
@@ -109,8 +177,10 @@ void NVMInterface::applyMemoryCorruption(Rank &rank_ref,
     if (!status) {
         return;
     }
-    std::cout<< "NVM: MEMORY CORRUPTION Rank:" << rank_ref.rank << ", Bank: "
-        << bank_ref.bank << "status: " << status << std::endl;
+    return; // no flips possible in NVM
+    DPRINTF(RowHammer, "NVM MEMORY CORRUPTION Rank: %d,"
+                       " Bank: %d, Status: %2x\n",
+            rank_ref.rank,bank_ref.bank,status);
 }
 
 MemPacket*
@@ -335,7 +405,7 @@ DRAMInterface::activateBank(Rank& rank_ref, Bank& bank_ref,
     bank_ref.openRow = row;
     uint32_t corruption_status = bank_ref.setOpenRow(row, rowhammerThreshold);
 
-    applyMemoryCorruption(rank_ref, bank_ref, corruption_status);
+    applyMemoryCorruption(rank_ref, bank_ref, row, corruption_status);
 
     // start counting anew, this covers both the case when we
     // auto-precharged, and when this access is forced to
@@ -437,7 +507,9 @@ DRAMInterface::prechargeBank(Rank& rank_ref, Bank& bank, Tick pre_tick,
     // sample the bytes per activate here since we are closing
     // the page
     stats.bytesPerActivate.sample(bank.bytesAccessed);
-    bank.resetRHCounter();
+
+    //Current Row gets precharged
+    bank.prechargeOpenRow();
     bank.openRow = Bank::NO_ROW;
 
     Tick pre_at = pre_tick;
@@ -474,8 +546,6 @@ DRAMInterface::prechargeBank(Rank& rank_ref, Bank& bank, Tick pre_tick,
         DPRINTF(DRAMPower, "%llu,PRE,%d,%d\n", divCeil(pre_at, tCK) -
                 timeStampOffset, bank.bank, rank_ref.rank);
     }
-    // Reset RH Counter for Bank
-    bank.resetRHCounter();
 
     // if we look at the current number of active banks we might be
     // tempted to think the DRAM is now idle, however this can be
@@ -527,12 +597,11 @@ DRAMInterface::doBurstAccess(MemPacket* mem_pkt, Tick next_burst_at,
     } else {
         row_hit = false;
 
-        // If there is a page open, precharge it.
         if (bank_ref.openRow != Bank::NO_ROW) {
-            prechargeBank(rank_ref, bank_ref, std::max(bank_ref.preAllowedAt,
-                                                   curTick()));
+            prechargeBank(rank_ref, bank_ref,
+                          std::max(bank_ref.preAllowedAt,curTick()));
         }
-        //bank_ref.openRow = Bank::NO_ROW;
+        bank_ref.openRow = Bank::NO_ROW;
 
         // next we need to account for the delay in activating the page
         Tick act_tick = std::max(bank_ref.actAllowedAt, curTick());
@@ -809,12 +878,6 @@ DRAMInterface::DRAMInterface(const DRAMInterfaceParams &_p)
     fatal_if(!isPowerOf2(ranksPerChannel), "DRAM rank count of %d is "
              "not allowed, must be a power of two\n", ranksPerChannel);
 
-    for (int i = 0; i < ranksPerChannel; i++) {
-        DPRINTF(DRAM, "Creating DRAM rank %d \n", i);
-        Rank* rank = new Rank(_p, i, *this);
-        ranks.push_back(rank);
-    }
-
     // determine the dram actual capacity from the DRAM config in Mbytes
     uint64_t deviceCapacity = deviceSize / (1024 * 1024) * devicesPerRank *
                               ranksPerChannel;
@@ -834,6 +897,13 @@ DRAMInterface::DRAMInterface(const DRAMInterfaceParams &_p)
             rowBufferSize, burstsPerRowBuffer);
 
     rowsPerBank = capacity / (rowBufferSize * banksPerRank * ranksPerChannel);
+
+    for (int i = 0; i < ranksPerChannel; i++) {
+        DPRINTF(DRAM, "Creating DRAM rank %d \n", i);
+        Rank* rank = new Rank(_p, i, *this);
+        ranks.push_back(rank);
+    }
+
 
     // some basic sanity checks
     if (tREFI <= tRP || tREFI <= tRFC) {
@@ -1169,7 +1239,7 @@ DRAMInterface::Rank::Rank(const DRAMInterfaceParams &_p,
       pwrStateTick(0), refreshDueAt(0), pwrState(PWR_IDLE),
       refreshState(REF_IDLE), inLowPowerState(false), rank(_rank),
       readEntries(0), writeEntries(0), outstandingEvents(0),
-      wakeUpAllowedAt(0), power(_p, false), banks(_p.banks_per_rank),
+      wakeUpAllowedAt(0), power(_p, false),
       numBanksActive(0), actTicks(_p.activation_limit, 0), lastBurstTick(0),
       writeDoneEvent([this]{ processWriteDoneEvent(); }, name()),
       activateEvent([this]{ processActivateEvent(); }, name()),
@@ -1180,8 +1250,8 @@ DRAMInterface::Rank::Rank(const DRAMInterfaceParams &_p,
       stats(_dram, *this)
 {
     for (int b = 0; b < _p.banks_per_rank; b++) {
-        banks[b] = Bank(_dram.rowsPerBank);
-        banks[b].bank = b;
+        auto curr = Bank(_dram.rowsPerBank, rank);
+        curr.bank = b;
         // GDDR addressing of banks to BG is linear.
         // Here we assume that all DRAM generations address bank groups as
         // follows:
@@ -1193,11 +1263,12 @@ DRAMInterface::Rank::Rank(const DRAMInterfaceParams &_p,
             //    banks 1,5,9,13  are in bank group 1
             //    banks 2,6,10,14 are in bank group 2
             //    banks 3,7,11,15 are in bank group 3
-            banks[b].bankgr = b % _p.bank_groups_per_rank;
+            curr.bankgr = b % _p.bank_groups_per_rank;
         } else {
             // No bank groups; simply assign to bank number
-            banks[b].bankgr = b;
+            curr.bankgr = b;
         }
+        banks.push_back(curr);
     }
 }
 
@@ -1480,6 +1551,11 @@ DRAMInterface::Rank::processRefreshEvent()
         // Run the refresh and schedule event to transition power states
         // when refresh completes
         refreshState = REF_RUN;
+        DPRINTF(RowHammer, "Reset accessCounter for Rank %d\n",
+                unsigned(rank));
+        for (auto b :banks){
+            b.resetRHCounter();
+        }
         schedule(refreshEvent, ref_done_at);
         return;
     }
@@ -2099,6 +2175,14 @@ NVMInterface::NVMInterface(const NVMInterfaceParams &_p)
     fatal_if(!isPowerOf2(ranksPerChannel), "NVM rank count of %d is "
              "not allowed, must be a power of two\n", ranksPerChannel);
 
+    uint64_t capacity = 1ULL << ceilLog2(AbstractMemory::size());
+
+    DPRINTF(NVM, "NVM capacity %lld (%lld) bytes\n", capacity,
+            AbstractMemory::size());
+
+    rowsPerBank = capacity / (rowBufferSize *
+                              banksPerRank * ranksPerChannel);
+
     for (int i =0; i < ranksPerChannel; i++) {
         // Add NVM ranks to the system
         DPRINTF(NVM, "Creating NVM rank %d \n", i);
@@ -2106,24 +2190,19 @@ NVMInterface::NVMInterface(const NVMInterfaceParams &_p)
         ranks.push_back(rank);
     }
 
-    uint64_t capacity = 1ULL << ceilLog2(AbstractMemory::size());
-
-    DPRINTF(NVM, "NVM capacity %lld (%lld) bytes\n", capacity,
-            AbstractMemory::size());
-
-    rowsPerBank = capacity / (rowBufferSize *
-                    banksPerRank * ranksPerChannel);
-
 }
 
 NVMInterface::Rank::Rank(const NVMInterfaceParams &_p,
                          int _rank, NVMInterface& _nvm)
-    : EventManager(&_nvm), rank(_rank), banks(_p.banks_per_rank)
+    : EventManager(&_nvm), rank(_rank)
 {
+
     for (int b = 0; b < _p.banks_per_rank; b++) {
-        banks[b].bank = b;
+        auto curr = Bank(_nvm.rowsPerBank, rank);
+        curr.bank = b;
         // No bank groups; simply assign to bank number
-        banks[b].bankgr = b;
+        curr.bankgr = b;
+        banks.push_back(curr);
     }
 }
 

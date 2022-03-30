@@ -872,6 +872,7 @@ for ext in target_exts:
         needed_envs |= set(envs.keys())
         break
 
+DebugFlag('RowHammer')
 
 # SCons doesn't know to append a library suffix when there is a '.' in the
 # name. Use '_' instead.

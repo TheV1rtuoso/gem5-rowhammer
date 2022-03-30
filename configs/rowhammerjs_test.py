@@ -78,7 +78,7 @@ system.mem_ctrl.dram = DDR3_1600_8x8()
 system.mem_ctrl.dram.range = system.mem_ranges[0]
 system.mem_ctrl.port = system.membus.mem_side_ports
 
-system.mem_ctrl.dram.rowhammer_threshold = 0
+system.mem_ctrl.dram.rowhammer_threshold = 100
 system.mem_ctrl.dram.corruption_mask = 0
 
 # Connect the system up to the membus
@@ -90,7 +90,7 @@ isa = str(m5.defines.buildEnv['TARGET_ISA']).lower()
 # Default to running 'hello', use the compiled ISA to find the binary
 # grab the specific path to the binary
 thispath = os.path.dirname(os.path.realpath(__file__))
-binary = os.path.join(thispath, '../rowhammer-test/rowhammer_test')
+binary = os.path.join(thispath, '../rowhammerjs/native/rowhammer')
 
 system.workload = SEWorkload.init_compatible(binary)
 
